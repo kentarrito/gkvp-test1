@@ -119,7 +119,7 @@ In this work we use **SEIMEI**, an open-source library that orchestrates LLM-bas
 Figure | SEIMEI's inference and learning pipeline. Reinforcement-learning on search model improves the model reasoning path through guiding its thought.
 
 Key idea (plainly): instead of training LLM on next token prediction task, SEIMEI **trains search model to guide inference**. This feature has the following advantage over the previous method.
-1. Training search model doesn't break the core inference LLM, which prevents core inference collapsion (!need to add continuous learning sitation). 
+1. Training search model doesn't break the core inference LLM, which prevents core inference collapsion (!need to add continuous learning citation). 
 2. Adapting search model to one domain requires much less calculation cost than training next-token-generation LLM.
 
 **Search** has been a key technology for knowledge expansion. Search-engine has connected numerous amount of documents created by citizens and enabled human-beings to enhance the whole search-engine system by adding their own knowledge. This flexiblity to adding knowledge is key to expanding knowledge for an AI system. SEIMEI has a potential to become a new AI system - search model integrates not only simple knowledge but also how to think - beyond current workflow agent paradigm.
