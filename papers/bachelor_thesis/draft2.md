@@ -128,13 +128,16 @@ Key idea (plainly): instead of training LLM on next token prediction task, SEIME
 
 ### 1.4 RMSearch
 
-SEIMEI’s routing and knowledge selection use **RMSearch**, a “reward-model-style” search/reranking component. RMSearch is used to retrieve and prioritize helpful snippets (knowledge, prior solutions, docs, heuristics) that augment the LLM’s next step. ([GitHub][12])
+SEIMEI’s routing and knowledge selection use **RMSearch**, a reward-model-style search/reranking component. RMSearch retrieves and prioritizes helpful snippets (knowledge, prior solutions, docs, heuristics) that augment the LLM’s next step. ([GitHub][12])
 
 ![rmsearch_idea](image.png)
+Figure | Model architecture difference between conventional vector search model and RMSearch.
 
-Architecturally, RMSearch is closest to a **reranker**: given a query and candidate texts, it scores query–candidate relevance (often with a cross-encoder-like setup). This is aligned with a long line of reranking research, including BERT-style rerankers and efficient interaction models. ([arXiv][13])
+Architecturally, RMSearch is closest to a **reranker**: given a query and candidate texts, it scores query–candidate relevance (often with a cross-encoder-style setup). This aligns with a long line of reranking research, including BERT-style rerankers and efficient interaction models. ([arXiv][13])
 
-Why reranking matters for scientific coding: for a large codebase, the main failure mode is often not “the model can’t write code,” but “the model used the wrong assumptions / wrong file / wrong function contract.” Strong retrieval/reranking reduces those errors by forcing the model to ground its edits in the right local context.
+The practical difference is the retrieval pipeline. In many systems, a dense retriever first returns a top-k set (e.g., 100), and a reranker then reorders that shortlist to select the final few. RMSearch instead scores candidates directly with the reward model, so relevance is computed with the same signal used for selection rather than as a separate post-processing stage.
+
+RMSearch (reranking) matters especially in domain-specific search, where generic embedding similarity can miss task-relevant signals. A dense retriever compresses text into vectors, while a reward model learns to score relevance directly from paired query-candidate text. This makes RMSearch easier to adapt to a specific domain with preference data. ([GitHub][12])
 
 ---
 
@@ -227,9 +230,9 @@ Concretely, for a given file:
 
 1. An LLM selects **which line(s) to break**, with the constraint that the deletion should affect **core physics logic** (not only comments or trivial formatting).
 2. The pipeline generates:
-
    * a **patch** that removes important lines,
    * a **question** describing the observed failure or missing behavior (“restore the missing computation / boundary condition / term”) and ask LLM to fix the issue.
+3. An LLM debug patches: a patch often is not valid when it is applied to the file, so an LLM trys to modify the patch file from the error message for several times in this stage. If some patches still get error after this process, they are removed. 
 
 Why “break-and-repair” is useful:
 
@@ -268,7 +271,7 @@ We use RMSearch for integrating search model rather than conventional semantic-e
 We generate knowledge in two complementary ways:
 
 ![knowledge_generation](image-4.png)
-Figure | Knowledge generation pipeline from correct answer
+Figure | Knowledge generation pipeline from correct answer.
 
 1. **Automatic knowledge generation (from repairs):**
    Compare the agent’s output patch to the expected fix and extract reusable statements such as:
@@ -294,12 +297,20 @@ We keep both because automatic knowledge can scale, while manual knowledge can b
 ### 2.5 Dataset for RMSearch
 
 ![dpo_dataset_creation](image-5.png)
+Figure | Preference-style dataset creation for DPO training (conceptual).
 
-RMSearch training needs preference-style dataset. We construct them from pipeline runs by creating comparisons like:
+RMSearch training requires a preference-style dataset. We construct it from pipeline runs by creating comparisons like:
 
 * **Knowledge preference:** given a query (“fix this missing physics term”) and previous agent outputs, compare two candidate knowledge snippets A vs B based on whether using them leads to a higher-scoring answer.
 
-This matches the general “learning from preferences” paradigm used in RLHF, but we apply it to **retrieval/reranking and agent routing** rather than directly to the generator model. ([arXiv][27]) In this method, knowledge sampling and deciding preferable knowledge are key to successful training. 
+This matches the general “learning from preferences” paradigm used in RLHF, but we apply it to **retrieval/reranking and agent routing** rather than directly to the generator model. ([arXiv][27])
+
+In this method, knowledge sampling and preference assignment are key. The sampling procedure used in this experiment is:
+
+* **Knowledge generation or selection:** from the full message history of a base inference trial, an LLM generates or selects knowledge for designated steps. A set of knowledge texts spanning several steps is called a **knowledge chunk**. We generate multiple chunks for each problem.
+* **Rerun inferences with knowledge chunks:** using each generated or selected knowledge chunk, rerun the inference. Several runs are performed per chunk.
+* **Scoring knowledge chunks:** score each inference run and average scores per knowledge chunk to obtain a chunk-level score.
+* **Converting to a preference dataset:** from chunk scores, build (query, chosen knowledge, rejected knowledge) pairs. The query is the message history up to the step that will be augmented by the chosen or rejected knowledge. A threshold removes trivial score differences.
 
 ---
 
@@ -315,27 +326,11 @@ $$
 
 where $q$ is the query, $k^+$ is the preferred key (knowledge or candidate patch), $k^-$ is the less-preferred key, $s_{\theta}$ is the RMSearch score (reward) function, $s_{\mathrm{ref}}$ is a fixed reference scorer used to keep updates conservative, $\beta$ controls the sharpness of the preference margin, and $\sigma$ is the logistic function. This makes the connection to RMSearch explicit: training adjusts the **query + key -> reward** scores so that preferred knowledge/patches receive higher scores, which directly improves the reranking behavior at inference time.
 
-Why DPO here:
-
-* It provides a preference-learning mechanism without the full PPO rollout complexity typical of RLHF. ([arXiv][28])
-* Rerankers naturally fit pairwise objectives (common in ranking systems).
-
-Architectural grounding:
-
-* The reranking framing is consistent with BERT rerankers (monoBERT) and efficient relevance models (ColBERT), though our domain and candidates are code/knowledge artifacts rather than passages. ([arXiv][13])
+**Batch construction (following InstructGPT’s RM training recipe).** A practical issue in preference training is that many pairwise comparisons derived from the *same* query are highly correlated. In the InstructGPT reward-modeling pipeline, labelers rank ${K}$ candidate completions per prompt (with ${K}$ between 4 and 9), yielding up to $\binom{K}{2}$ pairwise comparisons; the authors found that naively shuffling these comparisons and training on them as independent datapoints caused rapid overfitting. Instead, they treat **all $\binom{K}{2}$ comparisons from a single prompt as one batch element**, which is both (i) **more compute-efficient** (one forward pass per candidate rather than $\binom{K}{2}$ passes) and (ii) **more stable** (reduced overfitting, improved validation loss/accuracy). We adopt the same batching principle for RMSearch: each minibatch contains (B) distinct queries, and for each query we score ${K}$ candidate keys and apply the pairwise preference loss over the within-query comparison set, rather than mixing comparisons across queries indiscriminately. This keeps updates aligned with the “within-query reranking” structure that RMSearch must solve at inference time. ([arXiv][5])
 
 ---
 
 ### 2.7 RMSearch & Inference Evaluation
-
-Even without reporting numbers in this baseline, we define what “better” means:
-
-* **Patch apply success rate** (does the patch cleanly apply?).
-* **Compilation / static checks** (when feasible).
-* **Task-specific correctness checks** (unit tests or minimal-run checks).
-* **Edit locality** (prefer minimal diffs when both fixes pass).
-
-The same evaluation signal is also what we use to generate preference data for RMSearch.
 
 ---
 
@@ -350,8 +345,20 @@ The same evaluation signal is also what we use to generate preference data for R
 
 ---
 
+### 3.3. Human Evaluation
+
+
+---
+
 ## 4. Discussion
 
+### 4.1. Possibility of Domain Specific LLM
+
+### 4.2. Unsuccessful Attempts
+
+* sampling methods
+
+* making dataset with codex
 
 ---
 
