@@ -9,7 +9,7 @@ Kyoto University
 
 This thesis studies LLM-assisted code repair for gyrokinetic plasma simulation software. Using the GKV (gkvp) codebase, we build a repair dataset by intentionally removing physics-critical lines and generating repair questions with known ground-truth patches. We implement SEIMEI, an agentic inference pipeline that navigates the repository and proposes fixes, and augment it with RMSearch, a reward-model-based reranker that selects task-relevant knowledge snippets during inference. Preference data for RMSearch is constructed from inference runs and trained using a DPO-style objective.
 
-Experiments on 113 repair tasks (85 train / 28 test) show that RMSearch training reduces evaluation loss and improves reranking accuracy across iterations. When RMSearch is integrated into SEIMEI, repair accuracy improves by about 7% per iteration and exceeds 20% improvement by the third iteration compared to a baseline pipeline without RMSearch. These results suggest that domain-specific retrieval and lightweight preference training can yield practical gains in scientific code repair with modest computational cost.
+Experiments on 113 repair tasks (85 train / 28 test) show that RMSearch training reduces evaluation loss and improves reranking accuracy across iterations. When RMSearch is integrated into SEIMEI, repair accuracy improves by about 7% per iteration and exceeds 14% improvement by the third iteration compared to a baseline pipeline without RMSearch. These results suggest that domain-specific retrieval and lightweight preference training can yield practical gains in scientific code repair with modest computational cost.
 
 
 ## Contents
@@ -17,7 +17,7 @@ Experiments on 113 repair tasks (85 train / 28 test) show that RMSearch training
 - [1. Introduction](#1-introduction)
   - [1.1 Numerical simulations of fusion plasmas (big picture of fusion research)](#11-numerical-simulations-of-fusion-plasmas-big-picture-of-fusion-research)
   - [1.2 Ultimate research goal: problem solving with LLMs (knowledge pool and retrieval learning are key)](#12-ultimate-research-goal-problem-solving-with-llms-knowledge-pool-and-retrieval-learning-are-key)
-  - [1.3 Bachelor's thesis goal: error removal (subject to change)](#13-bachelors-thesis-goal-error-removal-subject-to-change)
+  - [1.3 Bachelor thesis goal: error removal (subject to change)](#13-bachelor-thesis-goal-error-removal-subject-to-change)
   - [1.4 Organization of the thesis](#14-organization-of-the-thesis)
 - [2. Large Language Model](#2-large-language-model)
   - [2.1 Current Development on Large Language Models](#21-current-development-on-large-language-models)
@@ -32,11 +32,17 @@ Experiments on 113 repair tasks (85 train / 28 test) show that RMSearch training
   - [3.4 Knowledge Generation](#34-knowledge-generation)
   - [3.5 Knowledge Sampling for RMSearch Dataset](#35-knowledge-sampling-for-rmsearch-dataset)
   - [3.6 RMSearch Training](#36-rmsearch-training)
-  - [3.7 RMSearch & SEIMEI Evaluation](#37-rmsearch--seimei-evaluation)
+  - [3.7 Training Iteration](#37-training-iteration)
+  - [3.8 RMSearch & SEIMEI Evaluation](#38-rmsearch--seimei-evaluation)
 - [4. Experiment](#4-experiment)
-  - [4.1. "rmsearch-plasma-1.0" Evaluation](#41-rmsearch-plasma-10-evaluation)
-  - [4.2. "seimei-plasma-1.0" Evaluation](#42-seimei-plasma-10-evaluation)
+  - [4.1. RMSearch Evaluation](#41-rmsearch-evaluation)
+  - [4.2. SEIMEI Evaluation](#42-seimei-evaluation)
+  - [4.3. Human Evaluation](#43-human-evaluation)
+  - [4.4. GPU and Cost](#44-gpu-and-cost)
 - [5. Discussion](#5-discussion)
+  - [5.1. Interpretation of Experimental Reaults](#51-interpretation-of-experimental-reaults)
+  - [5.2. Unsuccessful Attempts](#52-unsuccessful-attempts)
+  - [5.3. Possibility of Domain Specific LLM](#53-possibility-of-domain-specific-llm)
 - [6. Conclusion](#6-conclusion)
 - [References](#references)
 
@@ -450,11 +456,12 @@ The evaluation loss decreases steadily across iterations, while accuracy increas
 ![seimei_evaluation](image-9.png)
 Fugure | SEIMEI evaluation for all iterations. Base means that normal inference pipeline depected in section 3.3.
 
-Compared with the base pipeline (Section 3.3 without RMSearch), the SEIMEI pipeline augmented by RMSearch shows consistent gains. Accuracy improves by roughly 7% in each iteration, and by the third iteration the cumulative improvement exceeds 20%. This suggests that better retrieval and reranking translate into tangible improvements in end-to-end repair performance.
+Compared with the base pipeline (Section 3.3 without RMSearch), the SEIMEI pipeline augmented by RMSearch shows consistent gains. Accuracy improves by roughly 7% in each iteration, and by the second iteration the cumulative improvement exceeds 14%. This suggests that better retrieval and reranking translate into tangible improvements in end-to-end repair performance.
 
 ---
 
 ### 4.3. Human Evaluation
+
 
 
 ---
