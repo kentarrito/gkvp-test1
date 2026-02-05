@@ -25,6 +25,14 @@
 \usepackage[nameinlink,noabbrev]{cleveref}
 \usepackage{caption}
 
+% ---- Paragraph formatting ----
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.6em}
+
+% ---- Section breaks ----
+\let\oldsection\section
+\renewcommand{\section}{\clearpage\oldsection}
+
 % ---- Hyperref setup ----
 \hypersetup{
   colorlinks=true,
@@ -123,17 +131,7 @@ Early neural sequence models often relied on \textbf{recurrent neural networks (
 
 The \textbf{Transformer} replaces recurrence with \textbf{self-attention}, allowing each position in the sequence to directly attend to other positions. This improves long-range dependency handling and enables highly parallel training, which made it feasible to scale both datasets and model sizes effectively. \cite{ref-1}
 
-What is a token?\\
-LLMs do not read text as characters or “words” directly. Instead, input is converted into a sequence of \textbf{tokens}, which are discrete units produced by a tokenizer. A token can be:
-
-\begin{itemize}
-\item a full word (e.g., \texttt{function}),
-\item a subword piece (e.g., \texttt{func} + \texttt{tion}),
-\item punctuation or symbols (e.g., \texttt{\{}, \texttt{=}, \texttt{;}),
-\item or short character fragments.
-\end{itemize}
-
-Tokenization is widely used for efficiency: representing text at the character level can yield very long sequences, while representing all words as distinct tokens creates an impractically large vocabulary. Subword tokenization offers a practical trade-off by learning reusable pieces from large corpora while keeping sequence lengths and vocabulary size manageable.
+LLMs do not read text as characters or “words” directly. Instead, input is converted into a sequence of \textbf{tokens}, which are discrete units produced by a tokenizer. A token may be a full word (e.g., \texttt{function}), a subword piece (e.g., \texttt{func} + \texttt{tion}), punctuation or symbols (e.g., \texttt{\{}, \texttt{=}, \texttt{;}, \texttt{\}}), or short character fragments. Tokenization is widely used for efficiency: representing text at the character level yields very long sequences, while representing all words as distinct tokens creates an impractically large vocabulary. Subword tokenization offers a practical trade-off by learning reusable pieces from large corpora while keeping sequence lengths and vocabulary size manageable.
 
 \subsubsection{Scaling laws and compute-optimal training}
 
@@ -358,9 +356,11 @@ In the baseline approach, three agents are used in analyzing GKV code:
 
 These agents work as follows:
 
-(1) A problem is passed to a next-token generation model, which selects which agent to use in the next step.\\
-(2) Each agent produces an output. The model then conditions on the history of outputs to select the next agent. This repeats until the answer agent is selected.\\
-(3) After the answer agent is chosen, it summarizes what the agents found and outputs the result.
+\begin{enumerate}
+\item A problem is passed to a next-token generation model, which selects which agent to use in the next step.
+\item Each agent produces an output. The model then conditions on the history of outputs to select the next agent. This repeats until the answer agent is selected.
+\item After the answer agent is chosen, it summarizes what the agents found and outputs the result.
+\end{enumerate}
 
 This aligns with patterns demonstrated in prior agent work for tool use and repository-scale editing. \cite{ref-14} \cite{ref-15} \cite{ref-16} \cite{ref-18}
 
@@ -368,10 +368,12 @@ Compared to these methods, SEIMEI adds \textbf{routing and augmentation}: at eac
 
 The SEIMEI loop is:
 
-(1) A problem is passed to RMSearch instead of directly to the next-token generation model.\\
-(2) RMSearch selects what knowledge should be retrieved in the current step. Each knowledge item specifies which agent should use it, and the system calls that agent.\\
-(3) Each agent uses the retrieved knowledge and produces an output. The system then returns to (2) with the history of outputs until RMSearch chooses the answer agent.\\
-(4) The answer agent summarizes the results and outputs the final response.
+\begin{enumerate}
+\item A problem is passed to RMSearch instead of directly to the next-token generation model.
+\item RMSearch selects what knowledge should be retrieved in the current step. Each knowledge item specifies which agent should use it, and the system calls that agent.
+\item Each agent uses the retrieved knowledge and produces an output. The system then returns to (2) with the history of outputs until RMSearch chooses the answer agent.
+\item The answer agent summarizes the results and outputs the final response.
+\end{enumerate}
 
 We use RMSearch rather than a conventional semantic-embedding retriever because RMSearch (as a reranker-style model) computes relevance more directly and can be adapted to a specific domain using preference data. \cite{ref-34} \cite{ref-36}
 
@@ -440,7 +442,7 @@ In this method, knowledge sampling and preference assignment are key. The sampli
 
 \subsubsection{Reward Design}
 
-A key difference from a standard RAG pipeline is that RMSearch is trained on a reward derived from the quality of the final repair. The reward is computed by comparing the model-generated patch with the ground-truth patch (the original code before deletion). We use a 0–10 score with the following components:
+A key difference from a standard RAG pipeline is that RMSearch is trained on a reward derived from the quality of the final repair. The reward is computed by comparing the model-generated patch with the ground-truth patch (the original code before deletion). We use a 0–10 score with the following components. Table~\ref{tab:reward-design} summarizes the rubric and the purpose of each component.
 
 \begin{itemize}
 \item +2 for modifying the correct file.
@@ -456,6 +458,8 @@ This design keeps the reward tied to correctness while also encouraging RMSearch
 \small
 \setlength{\tabcolsep}{4pt}
 \renewcommand{\arraystretch}{1.15}
+\caption{\textbf{Reward design for RMSearch.} Scoring components and their maximum contributions to the 0--10 reward.}
+\label{tab:reward-design}
 \begin{tabularx}{\linewidth}{@{}l c Y Y@{}}
 \toprule
 Component & Max Score & Evaluation Criterion & Purpose \\
