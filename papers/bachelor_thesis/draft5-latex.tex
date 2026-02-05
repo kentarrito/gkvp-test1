@@ -24,14 +24,17 @@
 \usepackage{hyperref}
 \usepackage[nameinlink,noabbrev]{cleveref}
 \usepackage{caption}
+\usepackage{svg}
 
 % ---- Paragraph formatting ----
 \setlength{\parindent}{0pt}
 \setlength{\parskip}{0.6em}
 
 % ---- Section breaks ----
+\makeatletter
 \let\oldsection\section
-\renewcommand{\section}{\clearpage\oldsection}
+\renewcommand{\section}{\@ifstar{\clearpage\oldsection*}{\clearpage\oldsection}}
+\makeatother
 
 % ---- Hyperref setup ----
 \hypersetup{
@@ -53,9 +56,7 @@ Kyoto University\\
 \maketitle
 
 \begin{abstract}
-This thesis studies code development for turbulent transport in fusion plasmas using large language models (LLMs). Using a codebase called the \textbf{gyrokinetic Vlasov simulation code (GKV)}, we build a repair dataset by intentionally removing physics-critical lines and generating repair questions with known ground-truth patches. We implement \textbf{SEIMEI}, an agentic inference pipeline that navigates the repository and proposes fixes, and augment it with \textbf{RMSearch}, a reward-model-based reranker that selects task-relevant knowledge snippets during inference. Preference data for RMSearch is constructed from inference runs and trained using a Direct Preference Optimization (DPO)-style objective. This realizes a lightweight domain-adaptation loop centered on retrieval/reranking rather than retraining the base LLM.
-
-Experiments on 113 repair tasks (85 train / 28 test) show that RMSearch training reduces evaluation loss and improves reranking accuracy across iterations. When RMSearch is integrated into SEIMEI, repair accuracy improves by about 7\% per iteration and exceeds 14\% improvement by the third iteration compared to a baseline pipeline without RMSearch. These results suggest that knowledge retrieval and domain-specific training of RMSearch can yield practical gains in scientific code repair with modest computational cost.
+This thesis studies code development for turbulent transport in fusion plasmas using large language models (LLMs). Using a codebase called the \textbf{gyrokinetic Vlasov simulation code (GKV)}, we build a repair dataset by intentionally removing physics-critical lines and generating repair questions with known ground-truth patches. We implement \textbf{SEIMEI}, an agentic inference pipeline that navigates the repository and proposes fixes, and augment it with \textbf{RMSearch}, a reward-model-based reranker that selects task-relevant knowledge snippets during inference. Preference data for RMSearch is constructed from inference runs and trained using a Direct Preference Optimization (DPO)-style objective. This realizes a lightweight domain-adaptation loop centered on retrieval/reranking rather than retraining the base LLM. Experiments on 113 repair tasks (85 train / 28 test) show that RMSearch training reduces evaluation loss and improves reranking accuracy across iterations. When RMSearch is integrated into SEIMEI, repair accuracy improves by about 7\% per iteration and exceeds 14\% improvement by the third iteration compared to a baseline pipeline without RMSearch. These results suggest that knowledge retrieval and domain-specific training of RMSearch can yield practical gains in scientific code repair with modest computational cost.
 \end{abstract}
 
 \newpage
@@ -193,7 +194,7 @@ In this work we use \textbf{SEIMEI}, an open-source library that orchestrates LL
 
 \begin{figure}[t]
   \centering
-  \includegraphics[width=0.95\linewidth]{SEIMEI_idea.png}
+  \includesvg[width=0.95\linewidth]{seimei_idea2.png}
   \caption*{\textbf{Figure 1 | SEIMEI's inference and learning pipeline.} Reinforcement learning on the search model improves the reasoning path by guiding which agent/knowledge to use next.}
 \end{figure}
 
@@ -212,7 +213,7 @@ SEIMEI’s routing and knowledge selection use \textbf{RMSearch}, a reward-model
 
 \begin{figure}[t]
   \centering
-  \includegraphics[width=0.95\linewidth]{image.png}
+  \includesvg[width=0.95\linewidth]{rmsearch_idea2}
   \caption*{\textbf{Figure 2 | Model-architecture difference between a conventional vector search model and RMSearch.}}
 \end{figure}
 
@@ -626,6 +627,11 @@ This thesis presented a framework to adapt an LLM system to a specific codebase.
 The results indicate that domain-specific retrieval and lightweight preference training can enhance scientific code repair without retraining the base LLM. Future work includes expanding to additional codebases, refining evaluation beyond synthetic break-and-repair tasks, and improving automatic knowledge generation to reduce reliance on manual analysis.
 
 % =========================
+\section*{Acknowledgements}
+\addcontentsline{toc}{section}{Acknowledgements}
+
+I am deeply grateful to Ms. Narita for her guidance throughout the project, from experiments to the writing of this thesis. I also thank Saxena Prakhar, Juan Pablo, Mingkwan Rattanasiwamok, and Roshia at KyotoAI Inc. for their foundational research on RMSearch. I am grateful to my family for their constant support and for encouraging my curiosity.
+
 \clearpage
 \FloatBarrier
 \begin{thebibliography}{99}
