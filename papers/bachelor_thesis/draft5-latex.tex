@@ -1,0 +1,739 @@
+% =========================
+% Fusion Plasma Simulation Code Development Assisted by Large Language Models: Draft 5 (LaTeX, based on Draft 3 format)
+% =========================
+\documentclass[11pt]{article}
+
+% ---- Packages ----
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+
+\usepackage{xurl}        % allows breaks at more characters
+\usepackage[hidelinks]{hyperref}
+\usepackage{placeins} % provides \FloatBarrier to stop floats crossing a barrier
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{ragged2e}
+\newcolumntype{Y}{>{\RaggedRight\arraybackslash}X} % wrapped, left-aligned column
+
+
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage[nameinlink,noabbrev]{cleveref}
+\usepackage{caption}
+
+% ---- Hyperref setup ----
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue,
+  citecolor=blue,
+  urlcolor=blue,
+  pdftitle={Fusion Plasma Simulation Code Development Assisted by Large Language Models: Draft 5},
+}
+
+% ---- Title info ----
+\title{Fusion Plasma Simulation Code Development Assisted by Large Language Models: Draft 5}
+\author{Kentaro Seki\\
+Kyoto University\\
+\texttt{seki.kentaro.66s@st.kyoto-u.ac.jp}}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This thesis studies code development for turbulent transport in fusion plasmas using large language models (LLMs). Using a codebase called the \textbf{gyrokinetic Vlasov simulation code (GKV)}, we build a repair dataset by intentionally removing physics-critical lines and generating repair questions with known ground-truth patches. We implement \textbf{SEIMEI}, an agentic inference pipeline that navigates the repository and proposes fixes, and augment it with \textbf{RMSearch}, a reward-model-based reranker that selects task-relevant knowledge snippets during inference. Preference data for RMSearch is constructed from inference runs and trained using a Direct Preference Optimization (DPO)-style objective. This realizes a lightweight domain-adaptation loop centered on retrieval/reranking rather than retraining the base LLM.
+
+Experiments on 113 repair tasks (85 train / 28 test) show that RMSearch training reduces evaluation loss and improves reranking accuracy across iterations. When RMSearch is integrated into SEIMEI, repair accuracy improves by about 7\% per iteration and exceeds 14\% improvement by the third iteration compared to a baseline pipeline without RMSearch. These results suggest that knowledge retrieval and domain-specific training of RMSearch can yield practical gains in scientific code repair with modest computational cost.
+\end{abstract}
+
+\newpage
+\tableofcontents
+\newpage
+
+% =========================
+\section{Introduction}
+
+\subsection{Numerical simulations of fusion plasmas}
+
+Fusion devices are large-scale, and plasma phenomena span wide spatiotemporal scales that cannot be fully measured. Numerical simulation is therefore essential for device design, operation scenarios, and understanding plasma physics. To cover wide scales and incorporate detailed physics, simulation codes are large and interdependent; advances in computing have improved reproducibility but raised the barrier to new contributors.
+
+Modern nuclear-fusion research relies heavily on \textbf{gyrokinetic simulation}, where the six-dimensional Boltzmann equation is reduced into a more tractable form while preserving key microturbulence physics. This shift enabled first-principles turbulence studies and transport predictions that are difficult to obtain experimentally, and it is now routine to use large gyrokinetic codes for tokamak/stellarator turbulence and validation studies (e.g., GENE, GS2, GTC, GKV and related validation work). \cite{ref-28} \cite{ref-29} \cite{ref-30} \cite{ref-31}
+
+However, \textbf{gyrokinetic simulation software is hard to extend}:
+
+\begin{itemize}
+\item \textbf{Large, interdependent codebases}: physics modules (e.g., collision operators, electromagnetic terms, geometry, diagnostics) are spread across many files and abstraction layers.
+\item \textbf{High cost per new feature}: adding a small physics change (e.g., a collision term, equilibrium interface, or diagnostic) often requires edits across data structures, solvers, I/O, tests, and documentation.
+\item \textbf{High onboarding cost}: new contributors must learn both the physics and the code architecture before making safe changes.
+\end{itemize}
+
+LLMs are becoming practical tools for software development and scientific workflows, especially when paired with \textbf{external knowledge, tools, and structured agent pipelines}. This motivates building an LLM system that helps fusion researchers understand unfamiliar codebases and implement changes more reliably.
+
+\subsection{Ultimate research goal: problem solving with LLMs}
+
+The long-term goal is to build an LLM inference system that improves reasoning and conversation with plasma researchers:
+
+\begin{enumerate}
+\item Improve reasoning by providing the system with source code and relevant papers/documents.
+\item Improve conversation by capturing expert knowledge during interactions.
+\item Reuse that knowledge in later sessions to solve new problems more effectively.
+\end{enumerate}
+
+\subsection{Bachelor thesis goal: code repair and its improvement}
+
+For this bachelor thesis, the near-term goal is to develop an LLM-based system that can repair a broken code derived from a gyrokinetic codebase. The main processes are:
+
+\begin{itemize}
+\item Create a dataset from a fusion simulation codebase.
+\item Train the system and evaluate its performance on repair tasks.
+\item Refine the workflow and knowledge pool based on observed failure modes.
+\end{itemize}
+
+\subsection{Organization of the thesis}
+
+The paper is organized as follows:
+
+Section 2.1 reviews LLM research in recent years. Section 2.2 explains SEIMEI, the inference pipeline used in this research. SEIMEI is a search-integrated agent pipeline designed to adapt the system to domain-specific tasks by training a search model. Section 2.3 describes RMSearch, a reward-model-based search/reranking architecture used in SEIMEI. Since these methods are key to this research, readers are encouraged to consult Sections 2.2 and 2.3 when focusing on the SEIMEI/RMSearch design.
+
+Section 3 addresses the concrete method for creating an LLM system to solve GKV code-repair problems. Section 3.2 describes dataset construction with (problem, code, answer) tuples. Section 3.3 presents the inference pipeline for codebase analysis and patch generation. Section 3.4 explains knowledge creation for problem solving. Sections 3.5 to 3.7 describe knowledge-search training and evaluation.
+
+Sections 4 to 6 present experiments, discussion, and conclusions.
+
+% =========================
+\section{Large Language Model}
+
+\subsection{Current Development on Large Language Models}
+
+Large language models (LLMs) have rapidly moved from a research topic to widely used tools, popularized by systems such as ChatGPT, and are now routinely applied in scientific workflows, including programming and code review. A core reason is that both natural language and source code are \textbf{sequential data}: interpreting a token often requires understanding \emph{context} that may appear many steps earlier (e.g., variable definitions, function contracts, or algorithmic assumptions). This makes sequence modeling—capturing long-range dependencies while remaining trainable at scale—a central technical requirement for LLMs.
+
+Below, we summarize key developments that explain why modern LLM systems can support non-trivial scientific coding tasks, and why recent work increasingly emphasizes post-training and inference-time search.
+
+\subsubsection{Transformers}
+
+Early neural sequence models often relied on \textbf{recurrent neural networks (RNNs)}, which process a sequence step-by-step, carrying a hidden state forward in time. While effective for short contexts, this design creates two practical bottlenecks for long, technical inputs:
+
+\begin{itemize}
+\item \textbf{Information compression:} the model must repeatedly compress earlier context into a fixed-size hidden state, which can degrade retention of details that appeared far in the past (e.g., a boundary condition defined hundreds of tokens earlier).
+\item \textbf{Limited parallelism:} because computation depends on the previous timestep, training is less parallelizable than modern architectures, slowing large-scale optimization.
+\end{itemize}
+
+The \textbf{Transformer} replaces recurrence with \textbf{self-attention}, allowing each position in the sequence to directly attend to other positions. This improves long-range dependency handling and enables highly parallel training, which made it feasible to scale both datasets and model sizes effectively. \cite{ref-1}
+
+What is a token?\\
+LLMs do not read text as characters or “words” directly. Instead, input is converted into a sequence of \textbf{tokens}, which are discrete units produced by a tokenizer. A token can be:
+
+\begin{itemize}
+\item a full word (e.g., \texttt{function}),
+\item a subword piece (e.g., \texttt{func} + \texttt{tion}),
+\item punctuation or symbols (e.g., \texttt{\{}, \texttt{=}, \texttt{;}),
+\item or short character fragments.
+\end{itemize}
+
+Tokenization is widely used for efficiency: representing text at the character level can yield very long sequences, while representing all words as distinct tokens creates an impractically large vocabulary. Subword tokenization offers a practical trade-off by learning reusable pieces from large corpora while keeping sequence lengths and vocabulary size manageable.
+
+\subsubsection{Scaling laws and compute-optimal training}
+
+Scaling-law work observed that model loss often follows \textbf{smooth power-law trends} as you increase model size, data size, and compute, meaning progress can be predicted and engineered. \cite{ref-2} Later work showed that, under a fixed compute budget, many LLMs were “undertrained” on too few tokens, motivating \textbf{compute-optimal} training strategies (often summarized via the “Chinchilla” perspective). \cite{ref-3}
+
+Why this matters for scientific coding: scaling is not only “bigger is better”—it also provides guidance for compute-efficient training, which becomes relevant when considering reinforcement-learning (RL)-based post-training costs.
+
+\subsubsection{InstructGPT / Reinforcement Learning from Human Feedback (RLHF)}
+
+Base LLMs are trained to predict the next token, not to follow instructions. InstructGPT-style pipelines added a practical recipe:
+
+\begin{enumerate}
+\item Collect \textbf{human-written demonstrations} (supervised fine-tuning).
+\item Collect \textbf{human preference rankings} over model outputs.
+\item Train a \textbf{reward model} to predict those preferences.
+\item Optimize the policy using RL to improve the reward while limiting drift from the base model.
+\end{enumerate}
+
+In InstructGPT, Proximal Policy Optimization (PPO) is applied to optimize the model outputs by improving the reward while constraining updates for stability. \cite{ref-5} \cite{ref-6} The broader “learning from preferences” setup is also well-established in RL. \cite{ref-7}
+
+This line of work improved instruction-following and user preference alignment—even showing cases where a much smaller aligned model is preferred to a much larger base model. \cite{ref-5}
+
+\subsubsection{Direct Preference Optimization (DPO)}
+
+DPO reframes preference optimization as a supervised-style objective that can match RLHF-style goals (reward maximization with a KL-style constraint) without running full RL rollouts. Practically, that means:
+
+\begin{itemize}
+\item No explicit reward model is required at training time (it is “implicit”).
+\item Training resembles supervised fine-tuning, which can simplify stability and reduce engineering overhead.
+\end{itemize}
+
+This matters for our setting because we want a training loop that is realistic for academic GPU budgets. \cite{ref-10}
+
+\subsubsection{DeepSeek-R1-style reasoning-focused post-training}
+
+Recent reasoning-focused model releases and reports (e.g., DeepSeek-R1) highlight renewed emphasis on preference optimization and RL as a path to stronger reasoning behavior, often combined with careful data and evaluation design. \cite{ref-35}
+
+For this thesis’s narrative, the key point is not that one model is best, but that the field trend increasingly treats \textbf{post-training (preferences, RL, or RL-free variants like DPO)} as a major lever for reasoning and reliability.
+
+\subsubsection{Test-time compute (inference-time search)}
+
+Even without changing model weights, you can often improve reasoning by spending more computation at inference time. Common patterns include:
+
+\begin{itemize}
+\item \textbf{Chain-of-thought prompting}: ask the model to write intermediate steps. \cite{ref-11}
+\item \textbf{Self-consistency}: sample multiple reasoning traces and pick the majority-consistent answer. \cite{ref-12}
+\item \textbf{Tree of Thoughts (ToT)}: explicitly search a tree of partial solutions, backtrack, and evaluate branches. \cite{ref-13}
+\end{itemize}
+
+A simple analogy: instead of trusting the first draft, you ask the model to generate multiple candidate “proof attempts,” then select or refine the best. This “test-time search” theme is directly relevant to agentic coding pipelines, where we can generate multiple patch candidates and score them.
+
+\subsubsection{Why RL can help, and why it can be expensive}
+
+Empirically, preference/RL-style post-training often improves instruction-following and sometimes reasoning benchmark performance, but it can be resource-intensive because it requires generating many samples (rollouts) and performing multiple optimization steps (e.g., PPO). \cite{ref-5} This motivates exploring RL-free (or “more supervised-like”) alternatives such as DPO where appropriate. \cite{ref-10}
+
+\subsection{SEIMEI}
+
+In this work we use \textbf{SEIMEI}, an open-source library that orchestrates LLM-based inference as a \textbf{search-integrated agent pipeline}. Conceptually, SEIMEI is designed for tasks requiring domain-specific knowledge and reasoning. SEIMEI realizes this by training a search model that integrates agents and knowledge and guides the inference trajectory. \cite{ref-33}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.95\linewidth]{SEIMEI_idea.png}
+  \caption*{\textbf{Figure 1 | SEIMEI's inference and learning pipeline.} Reinforcement learning on the search model improves the reasoning path by guiding which agent/knowledge to use next.}
+\end{figure}
+
+Key idea: instead of training the core inference LLM for next-token prediction, SEIMEI trains a search model to guide inference. Figure 1 shows how SEIMEI improves the inference pipeline by training the search model. This has two practical advantages:
+
+\begin{enumerate}
+\item Training the search model does not modify the core inference LLM, reducing the risk of destabilizing the base generator.
+\item Adapting a search model to one domain typically requires much less computation than retraining a next-token-generation model.
+\end{enumerate}
+
+Search has long been a key technology for knowledge access and expansion. SEIMEI extends this idea by integrating not only factual knowledge but also “how to proceed” (i.e., which agent/tool to call next), making it a candidate architecture beyond conventional workflow-agent paradigms.
+
+\subsection{RMSearch}
+
+SEIMEI’s routing and knowledge selection use \textbf{RMSearch}, a reward-model-style search/reranking component. RMSearch retrieves and prioritizes helpful snippets (knowledge, prior solutions, docs, heuristics) that augment the LLM’s next step. \cite{ref-34} The RMSearch training approach used in this thesis is also described in a KyotoAI technical blog post. \cite{ref-36}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.95\linewidth]{image.png}
+  \caption*{\textbf{Figure 2 | Model-architecture difference between a conventional vector search model and RMSearch.}}
+\end{figure}
+
+Architecturally, RMSearch is closest to a \textbf{reranker}: given a query and candidate texts, it scores query–candidate relevance (often with a cross-encoder-style setup). This aligns with a long line of reranking research, including BERT-style rerankers and interaction-based models. \cite{ref-23} \cite{ref-24}
+
+The practical difference is the retrieval pipeline. In many systems, a dense retriever first returns a top-k set (e.g., 100), and a reranker then reorders that shortlist to select the final few. RMSearch instead directly scores candidates with a reward-model-style signal, so relevance is computed with the same type of signal used for selection rather than only as a separate post-processing stage.
+
+RMSearch (reranking) matters especially in domain-specific search, where generic embedding similarity can miss task-relevant signals. A dense retriever compresses text into vectors, while a reward model learns to score relevance directly from paired query–candidate text. This can make RMSearch easier to adapt to a specific domain with preference data. \cite{ref-34} \cite{ref-36}
+
+\subsection{Goal of our research}
+
+We aim to improve LLM-assisted plasma simulation code writing/editing using SEIMEI + RMSearch, with an emphasis on a gyrokinetic codebase (GKV). Our plan:
+
+\begin{enumerate}
+\item Build an inference system using SEIMEI.
+\item Generate a dataset from a real gyrokinetic codebase.
+\item Generate a \textbf{knowledge pool} by solving/repairing tasks (and extracting reusable lessons).
+\item Train RMSearch (reranker-style) over that knowledge pool using preference-style data (DPO).
+\item Measure whether the knowledge pool + trained RMSearch improves code-repair accuracy in the same domain.
+\end{enumerate}
+
+\subsection{Related Research}
+
+Below are the main research threads we build on; this section is intentionally cross-disciplinary.
+
+\subsubsection{Retrieval-Augmented Generation (RAG)}
+
+RAG methods attach an external memory (documents, snippets, code, papers) to an LLM so it can retrieve relevant context rather than relying only on parameters. The core motivation is modularity:
+
+\begin{itemize}
+\item You can update knowledge by updating the corpus/index, without retraining the whole model.
+\item You can attach provenance (“this answer used these sources”).
+\end{itemize}
+
+Classic RAG work combines a neural retriever with a generator for knowledge-intensive tasks. \cite{ref-19} Related lines include retrieval during pretraining (REALM) \cite{ref-20} and retrieval-enhanced generation at very large scale (RETRO). \cite{ref-21} Dense retrieval also became a standard baseline for open-domain QA and retrieval pipelines. \cite{ref-22}
+
+\textbf{Why it matters here:} codebases are “documents.” A fusion code repository contains the ground truth for function contracts, data layouts, and physics assumptions. RAG-style grounding reduces hallucinated edits.
+
+\subsubsection{AI agents (tool use, browsing, iterative editing)}
+
+Modern “LLM agents” combine a language model with tools and iterative control:
+
+\begin{itemize}
+\item Tool use learned or prompted (e.g., Toolformer). \cite{ref-15}
+\item Modular architectures mixing LMs with specialized components (MRKL). \cite{ref-16}
+\item Reason+act prompting patterns (ReAct), useful for multi-step tasks. \cite{ref-14}
+\item Web/tool-assisted answering and reference collection (WebGPT), relevant for grounded reasoning workflows. \cite{ref-17}
+\item Software-engineering agents with repository navigation and editing interfaces (SWE-agent). \cite{ref-18}
+\end{itemize}
+
+Agent frameworks in practice often emphasize interfaces (file editing, running checks, browsing) rather than only better prompts—this aligns with SEIMEI’s design goal of structured code repair. \cite{ref-18}
+
+\subsubsection{DSPy (automatic pipeline improvement from evaluation)}
+
+DSPy proposes a programming model where you declare an LLM pipeline, define a metric, and let a compiler-like optimizer improve prompts/modules using data. \cite{ref-25}
+
+\textbf{Connection to our goal:} we also want an evaluation-driven improvement loop, but focused on (a) code repair tasks, and (b) improving retrieval/reranking (RMSearch) and knowledge pools that feed the pipeline.
+
+\subsubsection{Reranker models (relevance scoring)}
+
+Reranker models are a standard IR technique: a fast retriever gets candidates; a stronger model reorders them. BERT reranking (monoBERT) demonstrated large gains in passage ranking. \cite{ref-23} ColBERT provides an efficiency–quality trade-off via late interaction. \cite{ref-24}
+
+\textbf{Connection to our work:} RMSearch plays the reranker role for “which knowledge or context should the agent use next,” which becomes crucial in specialized domains like gyrokinetics.
+
+% =========================
+\section{Approach}
+
+In this section, we present our approach to develop a pipeline for repairing gyrokinetic code under a setting where an error is introduced into the code. After showing an overview of the workflow in Section 3.1, we describe each component of the workflow in Sections 3.2–3.8.
+
+\subsection{Overview}
+
+Our framework is composed of four main parts: (1) Dataset, (2) Inference, (3) Sampling, and (4) Training. We perform the following tasks to develop the framework:
+
+\begin{enumerate}
+\item \textbf{Dataset creation (Section 3.2):} We prepare a training dataset by intentionally breaking the code and creating a question that asks for a repair.
+\item \textbf{Inference pipeline (Section 3.3):} For each (question, broken codebase), we run an inference pipeline that generates candidate repair patches and intermediate traces.
+\item \textbf{Scoring (Section 3.6.1):} The candidate repairs are evaluated using static checks, diff-quality checks, and (when available) tests/compilation.
+\item \textbf{Knowledge generation (Section 3.4):} We collect reusable “lessons” from successful (and failed) repairs for effective repair of highly specialized codes.
+\item \textbf{RMSearch dataset sampling (Section 3.5):} We create preference pairs by sampling inference traces and candidate knowledge items.
+\item \textbf{Train RMSearch (Sections 3.6 and 3.7):} DPO-style preference optimization is applied to train RMSearch.
+\item \textbf{Evaluation (Section 3.8):} We run the inference pipeline again, now routed/augmented by the trained RMSearch.
+\end{enumerate}
+
+This framework is designed to be feasible without full RLHF infrastructure, while still leveraging preference-style learning.
+
+\subsection{Dataset Creation}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.95\linewidth]{image-1.png}
+  \caption*{\textbf{Figure 3 | Dataset generation pipeline.} An LLM intentionally breaks complete code and generates problems related to repairing the code snippet.}
+\end{figure}
+
+We use the open gyrokinetic code GKV as the source code to generate the dataset. \cite{ref-27} GKV is written in Fortran, and its codebase consists of many Fortran source files as mentioned in Section 1.1.
+
+We assume an error is introduced into the code, and our framework assists with repair. A representative prompt is “repair the code so it matches the original intended physics-aware behavior.” To train the model inside the framework, we prepare the training dataset using an LLM with the target repository as follows:
+
+\begin{enumerate}
+\item An LLM selects which line(s) to break, with the constraint that the deletion should affect core physics logic (not only comments or trivial formatting).
+\item The pipeline generates:
+\begin{itemize}
+\item a patch that removes important lines,
+\item a question describing the observed failure or missing behavior (“restore the missing computation / boundary condition / term”) and asking the system to fix the issue.
+\end{itemize}
+\item Patch debugging: a generated patch is sometimes invalid when applied to the file, so an LLM iteratively fixes the patch based on error messages. If a patch still fails after this process, it is removed.
+\end{enumerate}
+
+In this way, many (problem, answer) pairs are obtained to define the break-and-repair task.
+
+Why break-and-repair is useful:
+
+\begin{itemize}
+\item \textbf{Correctness:} It provides a clean ground-truth patch because the correct fix is known. The system can compare the output patch with the original code.
+\item \textbf{Scalability:} This method only requires complete code and LLM calls, and can be scaled to other codes in plasma physics or other scientific domains.
+\item \textbf{Realism:} It creates physics-centered code editing problems that researchers often encounter in small additions or fixes related to plasma equations.
+\end{itemize}
+
+\subsection{Inference Pipeline}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.95\linewidth]{image-6.png}
+  \caption*{\textbf{Figure 4 | Current approach to access a codebase and solve problems.} A generative model selects a code\_act agent to access files and a think agent to decide next steps; once sufficient information is collected, an answer agent produces the final output.}
+\end{figure}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.95\linewidth]{image-7.png}
+  \caption*{\textbf{Figure 5 | SEIMEI approach to access a codebase and solve problems.} Compared to the current method, SEIMEI integrates knowledge and agents through RMSearch, making the overall system depend on RMSearch-based routing.}
+\end{figure}
+
+We implement the inference loop using SEIMEI. \cite{ref-33} Figures 4 and 5 show the difference between a baseline agent loop and the SEIMEI approach.
+
+In the baseline approach, three agents are used in analyzing GKV code:
+
+\begin{itemize}
+\item \textbf{code\_act agent:} runs Unix commands (e.g., \texttt{cat}, \texttt{ls}, \texttt{rg}) or Python code to analyze local folders and files.
+\item \textbf{think agent:} reviews command results and prior analysis, then decides what to do next.
+\item \textbf{answer agent:} gives the final answer summarizing the analysis results.
+\end{itemize}
+
+These agents work as follows:
+
+(1) A problem is passed to a next-token generation model, which selects which agent to use in the next step.\\
+(2) Each agent produces an output. The model then conditions on the history of outputs to select the next agent. This repeats until the answer agent is selected.\\
+(3) After the answer agent is chosen, it summarizes what the agents found and outputs the result.
+
+This aligns with patterns demonstrated in prior agent work for tool use and repository-scale editing. \cite{ref-14} \cite{ref-15} \cite{ref-16} \cite{ref-18}
+
+Compared to these methods, SEIMEI adds \textbf{routing and augmentation}: at each step, SEIMEI can call RMSearch to retrieve domain-relevant knowledge snippets, then incorporate them into the next model call. \cite{ref-33} \cite{ref-34}
+
+The SEIMEI loop is:
+
+(1) A problem is passed to RMSearch instead of directly to the next-token generation model.\\
+(2) RMSearch selects what knowledge should be retrieved in the current step. Each knowledge item specifies which agent should use it, and the system calls that agent.\\
+(3) Each agent uses the retrieved knowledge and produces an output. The system then returns to (2) with the history of outputs until RMSearch chooses the answer agent.\\
+(4) The answer agent summarizes the results and outputs the final response.
+
+We use RMSearch rather than a conventional semantic-embedding retriever because RMSearch (as a reranker-style model) computes relevance more directly and can be adapted to a specific domain using preference data. \cite{ref-34} \cite{ref-36}
+
+\subsection{Knowledge Generation}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.95\linewidth]{image-4.png}
+  \caption*{\textbf{Figure 6 | Knowledge update pipeline from correct answer.}\\
+Solved repair tasks are converted into reusable knowledge that improves future code-repair performance. A problem and broken code snippet are given to an AI agent, which produces an answer that is compared with the correct solution. The comparison is distilled into structured knowledge, which is stored in a knowledge base and later retrieved to guide subsequent repairs.}
+\end{figure}
+
+The knowledge pool can contribute to effective repair of highly specialized codes like GKV. In this study, the knowledge pool is generated in two steps:
+
+\begin{enumerate}
+\item \textbf{Manual knowledge:} Domain experts (or careful readers) write concise instructions about the task, such as:
+\begin{itemize}
+\item “Run the answer agent because enough agent outputs are obtained.”
+\item “Run \texttt{ls} to see what is in the current folder.”
+\item “Run \texttt{cat} to see what is inside a file.”
+\item “Run \texttt{rg} to search keywords over a folder.”
+\item “Change the strategy to file-comparison-centered analysis.”
+\end{itemize}
+
+Writing this requires careful analysis of reasoning steps and AI answers.
+
+\item \textbf{Automatic knowledge update (from repairs):} Compare the agent’s output patch to the expected fix and extract reusable statements such as:
+\begin{itemize}
+\item “When you run \texttt{cat}, run \texttt{ls} first to confirm the file path in the current folder.”
+\item “You often cause errors with \texttt{rg}; follow the format: \_\_."
+\item “When modifying the gyro-averaged potential term, also update normalization in \_\_\_.”
+\item “This file assumes flux-tube geometry; boundary conditions are enforced in \_\_\_.”
+\end{itemize}
+\end{enumerate}
+
+The goal is to turn one solved instance into a hint that helps future instances.
+
+We keep both because automatic knowledge can scale, while manual knowledge can be higher precision.
+
+\subsection{Knowledge Sampling for RMSearch Dataset}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.95\linewidth]{image-5.png}
+  \caption*{\textbf{Figure 7 | Preference-style dataset creation for DPO training (conceptual).}}
+\end{figure}
+
+RMSearch training requires a preference-style dataset. We construct it from pipeline runs by creating comparisons such as:
+
+\begin{itemize}
+\item \textbf{Knowledge preference:} given a query (“fix this missing physics term”) and previous agent outputs, compare two candidate knowledge snippets A vs B based on whether using them leads to a higher-scoring answer.
+\end{itemize}
+
+This matches the general “learning from preferences” paradigm used in RLHF, but we apply it to retrieval/reranking and agent routing rather than directly to the generator model. \cite{ref-8}
+
+In this method, knowledge sampling and preference assignment are key. The sampling procedure used in this experiment is:
+
+\begin{itemize}
+\item \textbf{Inference:} Knowledge sampling starts from running SEIMEI on problems. In each step, SEIMEI selects a knowledge text that is expected to be most useful for the next action. There are two knowledge-selection modes: an “llm” mode where a next-token model selects knowledge, and an “rm” mode where a reward model selects knowledge. Each inference produces a trace of the form (problem, number\_of\_steps $\times$ (knowledge, agent\_output)).
+\item \textbf{Sampling:} To construct a dataset for RMSearch, we sample a fixed number of candidate knowledge items per step (according to the sampling configuration used in the experiment).
+\item \textbf{Scoring knowledge:} After the pipeline produces an answer, we score the answer using the reward design described in Section 3.6.1.
+\item \textbf{Converting to a preference dataset:} From scores, we build (chosen set, rejected set) pairs. Each set includes the message history up to the step that will be augmented by the knowledge. A threshold removes trivial score differences.
+\end{itemize}
+
+\subsection{RMSearch Training}
+
+\subsubsection{Reward Design}
+
+A key difference from a standard RAG pipeline is that RMSearch is trained on a reward derived from the quality of the final repair. The reward is computed by comparing the model-generated patch with the ground-truth patch (the original code before deletion). We use a 0–10 score with the following components:
+
+\begin{itemize}
+\item +2 for modifying the correct file.
+\item +2 for modifying the correct location in that file.
+\item +3 for restoring the same functional code as the deleted portion.
+\item +3 for how directly the retrieved knowledge contributes to the reasoning steps (heuristically: +1 if the knowledge identifies the correct file, +1 if it identifies the correct code snippet, +1 if it materially improves the reasoning path).
+\end{itemize}
+
+This design keeps the reward tied to correctness while also encouraging RMSearch to select knowledge that is actually used by the agent to reach the fix.
+
+\begin{table}[t]
+\centering
+\small
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.15}
+\begin{tabularx}{\linewidth}{@{}l c Y Y@{}}
+\toprule
+Component & Max Score & Evaluation Criterion & Purpose \\
+\midrule
+Correct File Modification & +2 & The generated patch edits the same file as the ground-truth patch. & Ensures the model navigates to the right source file. \\
+Correct Location in File & +2 & The edit occurs at the correct line or code region. & Rewards precise localization of the defect. \\
+Functional Code Restoration & +3 & The restored code matches the functionality of the deleted/original code, even if syntax differs slightly. & Encourages semantic correctness over surface similarity. \\
+Knowledge Contribution — File Identification & +1 & Retrieved knowledge helps identify the correct file. & Incentivizes useful retrieval for navigation. \\
+Knowledge Contribution — Snippet Identification & +1 & Retrieved knowledge points to the correct code segment. & Rewards retrieval that narrows the search space. \\
+Knowledge Contribution — Reasoning Improvement & +1 & Retrieved knowledge materially improves the reasoning path toward the fix. & Promotes retrieval that actively supports decision making. \\
+\midrule
+\textbf{Total Possible Score} & \textbf{10} & Sum of all components. & Balances correctness and effective knowledge usage. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsubsection{Loss Function}
+
+RMSearch is trained with DPO-style preference optimization, treating RMSearch as a model that should assign higher relevance scores to preferred items (knowledge snippets or patches). \cite{ref-10}
+
+Concretely, RMSearch implements a scoring function that maps a query–key pair to a scalar score, i.e., \( s_{\theta}(q, k) \rightarrow r \). For a preference triple \((q, k^+, k^-)\), we use the DPO loss in a standard reference-model form:
+
+\[
+\mathcal{L}_{\mathrm{DPO}}
+= -\log \sigma\!\left(
+\beta \left[
+\big(s_{\theta}(q,k^+) - s_{\mathrm{ref}}(q,k^+)\big)
+-
+\big(s_{\theta}(q,k^-) - s_{\mathrm{ref}}(q,k^-)\big)
+\right]
+\right),
+\]
+
+where \(q\) is the query, \(k^+\) is the preferred key (knowledge or candidate patch), \(k^-\) is the less-preferred key, \(s_{\theta}\) is the RMSearch scoring function, \(s_{\mathrm{ref}}\) is a fixed reference scorer used to keep updates conservative, \(\beta\) controls the sharpness of the preference margin, and \(\sigma\) is the logistic function. This makes the connection to RMSearch explicit: training adjusts the query–key scores so that preferred knowledge/patches receive higher scores, which directly improves reranking behavior at inference time.
+
+\subsubsection{Batch construction (following InstructGPT’s reward-model training recipe)}
+
+A practical issue in preference training is that many pairwise comparisons derived from the same query are highly correlated. In the InstructGPT reward-modeling pipeline, labelers rank \(K\) candidate completions per prompt (with \(K\) between 4 and 9), yielding up to \(\binom{K}{2}\) pairwise comparisons; the authors found that naively shuffling these comparisons and training on them as independent datapoints caused rapid overfitting. Instead, they treat all \(\binom{K}{2}\) comparisons from a single prompt as one batch element, which is both (i) more compute-efficient (one forward pass per candidate rather than \(\binom{K}{2}\) passes) and (ii) more stable (reduced overfitting, improved validation loss/accuracy). \cite{ref-5}
+
+We adopt the same batching principle for RMSearch: each minibatch contains \(B\) distinct queries, and for each query we score \(K\) candidate keys and apply the pairwise preference loss over the within-query comparison set, rather than mixing comparisons across queries indiscriminately. This keeps updates aligned with the within-query reranking structure that RMSearch must solve at inference time.
+
+\subsection{Training Iteration}
+
+RMSearch training and SEIMEI inference form a bootstrapping loop. RMSearch is trained on data produced by SEIMEI runs, and the improved RMSearch then changes which knowledge is retrieved in the next round of SEIMEI inference. Concretely, each iteration follows:
+
+\begin{enumerate}
+\item Run SEIMEI with the current RMSearch (or a baseline retriever in iteration 0) to generate repairs and collect logs.
+\item Build preference data from these runs (knowledge chunks or candidate patches) using the reward defined in Section 3.6.1.
+\item Train RMSearch with the DPO objective.
+\item Use the updated RMSearch for the next iteration of inference and data collection.
+\end{enumerate}
+
+This loop is intended to steadily improve retrieval quality, which in turn improves downstream repair accuracy without retraining the base LLM.
+
+\subsection{RMSearch \& SEIMEI Evaluation}
+
+We use two metrics to evaluate RMSearch:
+
+\begin{itemize}
+\item \textbf{Evaluation loss:} the DPO loss defined in Section 3.6.2, which should decrease as the model learns to prefer better knowledge.
+\item \textbf{Accuracy:} the percentage of cases where RMSearch assigns the highest score to the preferred key for a given query.
+\end{itemize}
+
+For SEIMEI, we evaluate the inference pipeline using the same reward function defined in Section 3.6.1. We report accuracy based on whether the generated patch is judged correct under this scoring rule, and we also track reward trends across iterations.
+
+% =========================
+\section{Experiment}
+
+We evaluate the dataset generated by the method in Section 3.2 using the GKV codebase. The dataset contains 113 repair tasks, split into 85 training problems and 28 test problems.
+
+\textbf{Models}
+
+\begin{itemize}
+\item Inference model: \texttt{openai/gpt-oss-20b}
+\item Reward model / RMSearch backbone: \texttt{Skywork/Skywork-Reward-V2-Qwen3-4B} (referred to as \texttt{qwen4b-reward})
+\end{itemize}
+
+\textbf{Key hyperparameters}
+
+\begin{itemize}
+\item Evaluation: Seven sampling runs per problem.
+\item Training: preference threshold = 0.5.
+\item Iteration 1: knowledge sampling model = \texttt{gpt-oss-20b}, distribution decay = 0.8, random sampling rate = 0.1, sampling number = 14.
+\item Iteration 2–3: knowledge sampling model = RMSearch trained in the previous iteration, distribution decay = 0.5, random sampling rate = 0.1, sampling number = 14.
+\end{itemize}
+
+\subsection{RMSearch Evaluation}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.95\linewidth]{rmsearch_loss.jpeg}
+  \vspace{0.5em}
+
+  \includegraphics[width=0.95\linewidth]{rmsearch_acc.jpeg}
+  \caption*{\textbf{Figure 8 | RMSearch training evaluation log across iterations.}}
+\end{figure}
+
+The evaluation loss decreases steadily across iterations, while accuracy increases, indicating that the RMSearch model becomes better at selecting the preferred knowledge/key for each query. Iteration 1 shows a different accuracy trajectory from iterations 2 and 3, which is expected because iteration 1 uses the base LLM for knowledge sampling, while later iterations use the trained RMSearch from the previous round.
+
+\subsection{SEIMEI Evaluation}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.95\linewidth]{seimei_eval.jpeg}
+  \caption*{\textbf{Figure 9 | SEIMEI evaluation across iterations.} “Base” denotes the baseline inference pipeline in Section 3.3 without RMSearch-based routing.}
+\end{figure}
+
+Compared with the base pipeline, the SEIMEI pipeline augmented by RMSearch shows consistent gains. Accuracy improves by roughly 7\% in each iteration, and by the second iteration the cumulative improvement exceeds 14\%. This suggests that better retrieval and reranking translate into tangible improvements in end-to-end repair performance.
+
+\subsection{GPU and Cost}
+
+We used the following hardware:
+
+\begin{itemize}
+\item \texttt{gpt-oss-20b} inference: RTX A5000 (24 GB VRAM)
+\item \texttt{qwen4b-reward} search: RTX A5000 (24 GB VRAM)
+\item \texttt{qwen4b-reward} training: A40 (48 GB VRAM)
+\end{itemize}
+
+Per iteration, the runtime and cost were approximately:
+
+\begin{itemize}
+\item \textasciitilde 6 hours for knowledge sampling (2× RTX A5000)
+\item \textasciitilde 6 hours for RMSearch training (1× A40)
+\end{itemize}
+
+The total cost was about \$6 per iteration using a Runpod rental server.
+
+% =========================
+\FloatBarrier
+\section{Discussion}
+
+\subsection{Interpretation of Experimental Results}
+
+The results are promising because they show measurable improvement from a single domain-specific codebase without retraining the base LLM. The gains suggest that RMSearch does more than refine existing model outputs: by selecting task-relevant knowledge, it injects information the base model would not reliably recall on its own.
+
+The iterative improvement across three rounds indicates that the bootstrapping loop is effective: better reranking produces better inference traces, which in turn yields higher-quality preference data for the next round. Importantly, this improvement is achieved with relatively low compute compared to full language-model training, because RMSearch training focuses on reranking rather than next-token generation.
+
+At the same time, these experiments are limited to one codebase and a break-and-repair task formulation. The results should therefore be interpreted as evidence that the approach is viable and cost-effective, but not yet as proof of broad generalization.
+
+\subsection{Unsuccessful Attempts}
+
+When generating the dataset and sampling knowledge, we also encountered failures and setbacks along the way. We share these failure experiences here to provide insight; however, this does not imply that these approaches cannot develop effective search models.
+
+\subsubsection{Monte Carlo Tree Search (MCTS)}
+
+In early experiments, we integrated MCTS to guide step-by-step knowledge selection. The approach did not work well because the reward signal at each step was too noisy; the search tended to optimize short-term signals without improving the final repair quality. As a result, the system did not evolve meaningfully.
+
+\subsubsection{Knowledge Chunks Reward}
+
+To address the failure of step-wise rewards, we introduced “knowledge chunks,” which are bundles of knowledge spanning multiple steps and generated by an LLM from a base inference trace. Scoring these chunks produced a more stable reward signal than step-level scoring. However, this method reduces flexibility: the knowledge is fixed for multiple steps and can conflict with the model’s evolving needs during inference, which suppressed adaptive sampling and limited overall gains.
+
+\subsection{Possibility of Domain-Specific LLM}
+
+Although we do not retrain the base LLM in this study, the results suggest a pathway toward near real-time learning in a domain. The key is to treat knowledge retrieval and reranking as the adaptive component: new repairs, discussions, or expert notes can be added to the knowledge pool immediately, and RMSearch can be updated with lightweight preference training. Because this training operates on a small reranker rather than the full LLM, it can be performed frequently and at low cost, enabling rapid adaptation to new code changes or newly discovered best practices.
+
+In practice, a real-time learning loop would consist of (1) logging successful and failed repairs, (2) extracting reusable knowledge, and (3) periodically or continuously updating RMSearch. The base LLM remains stable, while the search model and knowledge pool evolve with the repository. This separation provides a form of real-time learning without the risks of catastrophic forgetting or the high compute cost of full model fine-tuning. Future work should test continuous updates and establish safeguards (e.g., validation gates) to prevent noisy or incorrect knowledge from degrading performance.
+
+% =========================
+\section{Conclusion}
+
+This thesis presented a framework to adapt an LLM system to a specific codebase. We constructed a break-and-repair dataset from the GKV codebase, implemented an agentic inference system (SEIMEI), and trained a reward-model-based reranker (RMSearch) using preference data derived from inference runs. Experiments demonstrated consistent improvements in reranking accuracy and end-to-end repair accuracy across iterations, with modest GPU cost.
+
+The results indicate that domain-specific retrieval and lightweight preference training can enhance scientific code repair without retraining the base LLM. Future work includes expanding to additional codebases, refining evaluation beyond synthetic break-and-repair tasks, and improving automatic knowledge generation to reduce reliance on manual analysis.
+
+% =========================
+\clearpage
+\FloatBarrier
+\begin{thebibliography}{99}
+
+\bibitem{ref-1}
+Vaswani et al., \emph{Attention Is All You Need}, NeurIPS 2017. arXiv:1706.03762.
+
+\bibitem{ref-2}
+Kaplan et al., \emph{Scaling Laws for Neural Language Models}, 2020. arXiv:2001.08361.
+
+\bibitem{ref-3}
+Hoffmann et al., \emph{Training Compute-Optimal Large Language Models}, NeurIPS 2022. arXiv:2203.15556.
+
+\bibitem{ref-4}
+Brown et al., \emph{Language Models are Few-Shot Learners}, NeurIPS 2020. arXiv:2005.14165.
+
+\bibitem{ref-5}
+Ouyang et al., \emph{Training language models to follow instructions with human feedback (InstructGPT)}, NeurIPS 2022. arXiv:2203.02155.
+
+\bibitem{ref-6}
+Schulman et al., \emph{Proximal Policy Optimization Algorithms}, 2017. arXiv:1707.06347.
+
+\bibitem{ref-7}
+Christiano et al., \emph{Deep Reinforcement Learning from Human Preferences}, NeurIPS 2017. arXiv:1706.03741.
+
+\bibitem{ref-8}
+Ziegler et al., \emph{Fine-Tuning Language Models from Human Preferences}, 2019. arXiv:1909.08593.
+
+\bibitem{ref-9}
+Stiennon et al., \emph{Learning to summarize from human feedback}, NeurIPS 2020. arXiv:2009.01325.
+
+\bibitem{ref-10}
+Rafailov et al., \emph{Direct Preference Optimization (DPO)}, 2023. arXiv:2305.18290.
+
+\bibitem{ref-11}
+Wei et al., \emph{Chain-of-Thought Prompting Elicits Reasoning in Large Language Models}, 2022. OpenReview.
+
+\bibitem{ref-12}
+Wang et al., \emph{Self-Consistency Improves Chain of Thought Reasoning in Language Models}, 2022. arXiv:2203.11171.
+
+\bibitem{ref-13}
+Yao et al., \emph{Tree of Thoughts: Deliberate Problem Solving with Large Language Models}, NeurIPS 2023. OpenReview.
+
+\bibitem{ref-14}
+Yao et al., \emph{ReAct: Synergizing Reasoning and Acting in Language Models}, ICLR 2023.
+
+\bibitem{ref-15}
+Schick et al., \emph{Toolformer: Language Models Can Teach Themselves to Use Tools}, 2023. arXiv:2302.04761.
+
+\bibitem{ref-16}
+Karpas et al., \emph{MRKL Systems}, 2022. arXiv:2205.00445.
+
+\bibitem{ref-17}
+Nakano et al., \emph{WebGPT: Browser-assisted question-answering with human feedback}, 2021. arXiv:2112.09332.
+
+\bibitem{ref-18}
+Yang et al., \emph{SWE-agent: Agent-Computer Interfaces Enable Automated Software Engineering}, NeurIPS 2024. arXiv:2405.15793.
+
+\bibitem{ref-19}
+Lewis et al., \emph{Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks}, NeurIPS 2020. arXiv:2005.11401.
+
+\bibitem{ref-20}
+Guu et al., \emph{REALM: Retrieval-Augmented Language Model Pre-Training}, 2020. arXiv:2002.08909.
+
+\bibitem{ref-21}
+Borgeaud et al., \emph{Improving language models by retrieving from trillions of tokens (RETRO)}, ICML 2022. arXiv:2112.04426.
+
+\bibitem{ref-22}
+Karpukhin et al., \emph{Dense Passage Retrieval for Open-Domain QA}, EMNLP 2020. arXiv:2004.04906.
+
+\bibitem{ref-23}
+Nogueira \& Cho, \emph{Passage Re-ranking with BERT (monoBERT)}, 2019. arXiv:1901.04085.
+
+\bibitem{ref-24}
+Khattab \& Zaharia, \emph{ColBERT}, 2020. arXiv:2004.12832.
+
+\bibitem{ref-25}
+Khattab et al., \emph{DSPy: Compiling Declarative Language Model Calls into Self-Improving Pipelines}, 2023. arXiv:2310.03714.
+
+\bibitem{ref-26}
+Chen et al., \emph{Evaluating Large Language Models Trained on Code (Codex)}, 2021. arXiv:2107.03374.
+
+\bibitem{ref-27}
+GKV-developers, \emph{gkvp: GyroKinetic Vlasov simulation code (repository)}. GitHub repository.
+
+\bibitem{ref-28}
+Görler et al., \emph{The global version of the gyrokinetic turbulence code GENE}, 2011.
+
+\bibitem{ref-29}
+Dorland et al., \emph{Gyrokinetic Simulations of Tokamak Microturbulence} (GS2-related overview), 2000.
+
+\bibitem{ref-30}
+Holod et al., \emph{Gyrokinetic particle simulations… (GTC-related)}, 2008.
+
+\bibitem{ref-31}
+Nakata et al., \emph{Validation studies of gyrokinetic ITG and TEM turbulence…}, \emph{Nucl. Fusion} 2016.
+
+\bibitem{ref-32}
+OpenHands, \emph{OpenHands (coding agent platform, repository/site)}. GitHub repository.
+
+\bibitem{ref-33}
+KyotoAI, \emph{SEIMEI (repository)}. GitHub repository.
+
+\bibitem{ref-34}
+KyotoAI, \emph{RMSearch (repository)}. GitHub repository.
+
+\bibitem{ref-35}
+DeepSeek-AI, \emph{DeepSeek-R1: Incentivizing Reasoning Capability in LLMs via Reinforcement Learning}, 2025. arXiv:2501.12948.
+
+\bibitem{ref-36}
+KyotoAI, \emph{RMSearch: Training Reward Models for Intelligent Search Using Advanced DPO Batching}, Medium, Feb 2026. \url{https://medium.com/@kyotoaiblog/rmsearch-training-reward-models-for-intelligent-search-using-advanced-dpo-batching-ee3a4c9ccabc}
+
+\end{thebibliography}
+
+\end{document}
