@@ -4,7 +4,7 @@
 \documentclass[11pt]{article}
 
 % ---- Packages ----
-\usepackage[margin=1in]{geometry}
+% \usepackage[margin=1in]{geometry}
 \usepackage[T1]{fontenc}
 \usepackage{lmodern}
 \usepackage{microtype}
@@ -29,6 +29,7 @@
 % ---- Paragraph formatting ----
 \setlength{\parindent}{0pt}
 \setlength{\parskip}{0.6em}
+\usepackage[top=35truemm,bottom=20truemm,left=30truemm,right=30truemm]{geometry}
 
 % ---- Section breaks ----
 \makeatletter
@@ -42,11 +43,11 @@
   linkcolor=blue,
   citecolor=blue,
   urlcolor=blue,
-  pdftitle={Fusion Plasma Simulation Code Development Assisted by Large Language Models},
+  pdftitle={Training Large Language Models for Fusion Plasma Simulation Code Development},
 }
 
 % ---- Title info ----
-\title{Fusion Plasma Simulation Code Development Assisted by Large Language Models}
+\title{Training Large Language Models for Fusion Plasma Simulation Code Development}
 \author{Kentaro Seki\\
 Kyoto University\\
 \texttt{seki.kentaro.66s@st.kyoto-u.ac.jp}}
@@ -56,7 +57,7 @@ Kyoto University\\
 \maketitle
 
 \begin{abstract}
-This thesis studies code development for turbulent transport in fusion plasmas using large language models (LLMs). Using a codebase called the \textbf{gyrokinetic Vlasov simulation code (GKV)}, we build a repair dataset by intentionally removing physics-critical lines and generating repair questions with known ground-truth patches. We implement \textbf{SEIMEI}, an agentic inference pipeline that navigates the repository and proposes fixes, and augment it with \textbf{RMSearch}, a reward-model-based reranker that selects task-relevant knowledge snippets during inference. Preference data for RMSearch is constructed from inference runs and trained using a Direct Preference Optimization (DPO)-style objective. This realizes a lightweight domain-adaptation loop centered on retrieval/reranking rather than retraining the base LLM. Experiments on 113 repair tasks (85 train / 28 test) show that RMSearch training reduces evaluation loss and improves reranking accuracy across iterations. When RMSearch is integrated into SEIMEI, repair accuracy improves by about 7\% per iteration and exceeds 14\% improvement by the third iteration compared to a baseline pipeline without RMSearch. These results suggest that knowledge retrieval and domain-specific training of RMSearch can yield practical gains in scientific code repair with modest computational cost.
+This thesis studies code development for turbulent transport in fusion plasmas applying large language models (LLMs). Using a codebase called the \textbf{gyrokinetic Vlasov simulation code (GKV)}, we build a repair dataset by intentionally removing physics-critical lines and generating repair questions with known ground-truth patches. We implement \textbf{SEIMEI}, an agentic inference pipeline that navigates the repository and proposes fixes, and augment it with \textbf{RMSearch}, a reward-model-based reranker that selects task-relevant knowledge snippets during inference. Preference data for RMSearch is constructed from inference runs and trained using a Direct Preference Optimization (DPO)-style objective. This realizes a lightweight domain-adaptation loop centered on retrieval/reranking rather than retraining the base LLM. Experiments on 113 repair tasks (85 train / 28 test) show that RMSearch training reduces evaluation loss and improves reranking accuracy across iterations. When RMSearch is integrated into SEIMEI, repair accuracy improves by about 7\% per iteration and exceeds 14\% improvement by the third iteration compared to a baseline pipeline without RMSearch. These results suggest that knowledge retrieval and domain-specific training of RMSearch can yield practical gains in scientific code repair with modest computational cost.
 \end{abstract}
 
 \newpage
@@ -110,7 +111,11 @@ Section 2.1 reviews LLM research in recent years. Section 2.2 explains SEIMEI, t
 
 Section 3 addresses the concrete method for creating an LLM system to solve GKV code-repair problems. Section 3.2 describes dataset construction with (problem, code, answer) tuples. Section 3.3 presents the inference pipeline for codebase analysis and patch generation. Section 3.4 explains knowledge creation for problem solving. Sections 3.5 to 3.7 describe knowledge-search training and evaluation.
 
-Sections 4 to 6 present experiments, discussion, and conclusions.
+Section 4 shows the detailed experimental setups and results.
+
+Section 5 discusses the experimental results presented in the previous section and unsuccessful attempts we made through the experiments.
+
+Finally, we conclude this thesis in section 6.
 
 % =========================
 \section{Large Language Model}
@@ -593,6 +598,8 @@ The total cost was about \$6 per iteration using a Runpod rental server.
 \FloatBarrier
 \section{Discussion}
 
+In this section, we discuss the experimental results presented in section 4. In section 5.1, we explain how to interpret the results and give insights into the ability of the framework developed in this study. As we have arrived at the final framework by trial and error, we describe several modifications in section 5.2. Also, the advantages of the final framework will be presented in section 5.3.
+
 \subsection{Interpretation of Experimental Results}
 
 The results are promising because they show measurable improvement from a single domain-specific codebase without retraining the base LLM. The gains suggest that RMSearch does more than refine existing model outputs: by selecting task-relevant knowledge, it injects information the base model would not reliably recall on its own.
@@ -626,21 +633,58 @@ Although we do not retrain the base LLM in this study, the results suggest a pat
 In practice, a real-time learning loop would consist of (1) logging successful and failed repairs, (2) extracting reusable knowledge, and (3) periodically or continuously updating RMSearch. The base LLM remains stable, while the search model and knowledge pool evolve with the repository. This separation provides a form of real-time learning without the risks of catastrophic forgetting or the high compute cost of full model fine-tuning. Future work should test continuous updates and establish safeguards (e.g., validation gates) to prevent noisy or incorrect knowledge from degrading performance.
 
 % =========================
+% Replace your current Conclusion section with the following
+% =========================
 \section{Conclusion}
 
-This thesis presented a framework to adapt an LLM system to a specific codebase. We constructed a break-and-repair dataset from the GKV codebase, implemented an agentic inference system (SEIMEI), and trained a reward-model-based reranker (RMSearch) using preference data derived from inference runs. Experiments demonstrated consistent improvements in reranking accuracy and end-to-end repair accuracy across iterations, with modest GPU cost.
+This thesis proposed and evaluated a practical framework for \textbf{domain-adapting an LLM-based coding assistant to a single, specialized scientific codebase} without retraining the base generator model. Focusing on turbulent transport simulation for fusion plasmas, we used the open-source \textbf{gyrokinetic Vlasov code GKV} as a realistic target where correctness is physics-sensitive and code understanding requires repository-scale context.
 
-The results indicate that domain-specific retrieval and lightweight preference training can enhance scientific code repair without retraining the base LLM. Future work includes expanding to additional codebases, refining evaluation beyond synthetic break-and-repair tasks, and improving automatic knowledge generation to reduce reliance on manual analysis.
+Our first contribution is the construction of a \textbf{break-and-repair dataset} tailored to scientific computing. By intentionally removing physics-critical lines and pairing each deletion with a ground-truth patch, we obtained training and test problems with an unambiguous notion of correctness. This dataset design is especially valuable for scientific software, where evaluation is often difficult: by anchoring tasks to known patches, we can measure repair success beyond surface-level plausibility and directly connect model behavior to code semantics.
 
+Our second contribution is an \textbf{agentic inference pipeline} implemented with SEIMEI, which structures repository exploration (file listing, reading, keyword search, and step planning) and produces candidate patches with intermediate traces. Rather than relying purely on prompt engineering, SEIMEI treats code repair as a multi-step process that can be logged, scored, and improved, making it suitable for iterative development and analysis.
+
+The core contribution of this thesis is demonstrating that \textbf{retrieval/routing can be the main learnable component} for domain adaptation. We constructed a \textbf{knowledge pool} from both manual heuristics and automatically distilled lessons from solved repairs, and trained \textbf{RMSearch} as a reranker-style model using \textbf{DPO-style preference optimization}. The reward design explicitly ties training signals to end-to-end repair quality (correct file, correct location, functional restoration, and measured knowledge contribution), and the batching strategy follows the practical insight from reward-model training that within-query comparisons should be treated as a structured unit.
+
+Experiments on 113 repair tasks show consistent trends: RMSearch evaluation loss decreases and accuracy increases across iterations, and when RMSearch is integrated into SEIMEI, \textbf{end-to-end repair accuracy improves by roughly 7\% per iteration}, exceeding \textbf{14\% cumulative improvement by the third iteration} compared to a baseline pipeline without RMSearch-based routing. Importantly, these gains were achieved at \textbf{modest computational cost} (on the order of a few GPU-hours per stage and approximately \$6 per iteration in our Runpod setting), supporting the thesis’s central claim that \emph{lightweight domain adaptation via reranking is feasible for academic-scale resources}.
+
+There are clear limitations. The current evaluation is restricted to a single codebase and a synthetic break-and-repair formulation, and the reward relies on comparison to ground-truth patches rather than fully physics-based runtime validation. In addition, knowledge extraction quality can vary: noisy or overly general “lessons” may reduce usefulness as the knowledge pool scales, suggesting the need for stronger filtering and validation gates.
+
+Future work naturally extends along three directions. First, we will evaluate generality by expanding to additional gyrokinetic and plasma-physics repositories and by incorporating more realistic defect sources (e.g., refactoring mistakes, boundary-condition regressions, and diagnostic inconsistencies). Second, we will strengthen correctness checks using compilation/tests and, where feasible, physics-facing validation signals (e.g., conservation properties or regression metrics on representative runs). Third, we will improve the knowledge lifecycle: automated distillation, deduplication, and confidence scoring, combined with periodic RMSearch updates, would move the system toward a \textbf{continuous, low-cost learning loop} where the base LLM remains stable while the search model and external memory evolve with the repository.
+
+Overall, this thesis provides evidence that \textbf{domain-specific retrieval and preference-trained reranking} can materially improve scientific code repair, offering a concrete path toward reliable LLM assistance for complex simulation software under realistic compute constraints.
+
+% =========================
+% Replace your current Acknowledgements section with the following
 % =========================
 \section*{Acknowledgements}
 \addcontentsline{toc}{section}{Acknowledgements}
 
-I am deeply grateful to Ms. Narita for her guidance throughout the project, from experiments to the writing of this thesis. I also thank Saxena Prakhar, Juan Pablo, Mingkwan Rattanasiwamok, and Roshia at KyotoAI Inc. for their foundational research on RMSearch. I am grateful to my family for their constant support and for encouraging my curiosity.
+I would like to express my sincere gratitude to \textbf{Ms.\ Narita} for her guidance and support throughout this project. Her careful feedback helped me refine both the experimental design and the writing, and her encouragement made it possible to continue iterating through failures and improvements until the system became measurable and stable.
+
+I am also deeply thankful to my colleagues at \textbf{KyotoAI Inc.}---\textbf{Saxena Prakhar}, \textbf{Juan Pablo}, \textbf{Mingkwan Rattanasiwamok}, and \textbf{Roshia}---for sharing foundational ideas and practical insights on RMSearch and for the many discussions that clarified what matters in real engineering workflows: reproducibility, careful logging, and evaluation that connects model behavior to outcomes. Their day-to-day support and willingness to answer small questions made a substantial difference in my progress.
+
+I would like to acknowledge the \textbf{GKV developers} and the broader fusion and gyrokinetics research community for producing and maintaining high-quality scientific software and publications. Open repositories and well-documented methods are essential for making research in this area reproducible and extensible, and this thesis was only possible because such resources are publicly available.
+
+I also appreciate the creators and maintainers of the open-source tools and libraries that supported this work, as well as the infrastructure providers that enabled practical experimentation under limited time and hardware constraints, including the GPU resources used for inference and training in our iterative runs.
+
+Finally, I would like to thank my family for their constant support. Their patience and encouragement sustained me through long debugging sessions, repeated experimental iterations, and the writing process. This work is the result of that support as much as it is of the experiments described in the thesis.
+
 
 \clearpage
 \FloatBarrier
 \begin{thebibliography}{99}
+
+\bibitem{ref-28}
+Görler et al., \emph{The global version of the gyrokinetic turbulence code GENE}, 2011.
+
+\bibitem{ref-29}
+Dorland et al., \emph{Gyrokinetic Simulations of Tokamak Microturbulence} (GS2-related overview), 2000.
+
+\bibitem{ref-30}
+Holod et al., \emph{Gyrokinetic particle simulations… (GTC-related)}, 2008.
+
+\bibitem{ref-31}
+Nakata et al., \emph{Validation studies of gyrokinetic ITG and TEM turbulence…}, \emph{Nucl. Fusion} 2016.
 
 \bibitem{ref-1}
 Vaswani et al., \emph{Attention Is All You Need}, NeurIPS 2017. arXiv:1706.03762.
@@ -722,18 +766,6 @@ Chen et al., \emph{Evaluating Large Language Models Trained on Code (Codex)}, 20
 
 \bibitem{ref-27}
 GKV-developers, \emph{gkvp: GyroKinetic Vlasov simulation code (repository)}. GitHub repository.
-
-\bibitem{ref-28}
-Görler et al., \emph{The global version of the gyrokinetic turbulence code GENE}, 2011.
-
-\bibitem{ref-29}
-Dorland et al., \emph{Gyrokinetic Simulations of Tokamak Microturbulence} (GS2-related overview), 2000.
-
-\bibitem{ref-30}
-Holod et al., \emph{Gyrokinetic particle simulations… (GTC-related)}, 2008.
-
-\bibitem{ref-31}
-Nakata et al., \emph{Validation studies of gyrokinetic ITG and TEM turbulence…}, \emph{Nucl. Fusion} 2016.
 
 \bibitem{ref-32}
 OpenHands, \emph{OpenHands (coding agent platform, repository/site)}. GitHub repository.
